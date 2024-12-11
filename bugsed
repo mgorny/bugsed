@@ -1,0 +1,114 @@
+#!/usr/bin/env python
+# (c) 2024 Michał Górny
+# SPDX-License-Identifier: GPL-2.0-or-later
+
+import argparse
+import itertools
+import os
+import sys
+
+from pathlib import Path
+
+import requests
+
+
+BUGZILLA_API_URL = 'https://bugs.gentoo.org/rest'
+
+def main():
+    argp = argparse.ArgumentParser()
+    argp.add_argument("--api-url",
+                      default=BUGZILLA_API_URL,
+                      help=f"Bugzilla API URL (default: {BUGZILLA_API_URL}")
+    argp.add_argument("-u", "--update",
+                      action="store_true",
+                      help="Apply bug updates (default is to dry-run)")
+    argp.add_argument("replacement_pairs",
+                      nargs="+",
+                      help="Pairs of needles and their replacements")
+    args = argp.parse_args()
+
+    if len(args.replacement_pairs) % 2 != 0:
+        argp.error("replacement-pairs uneven (missing a pair for "
+                   f"{args.replacement_pairs[-1]}")
+
+    print("Will perform the following replacements:")
+    it = iter(args.replacement_pairs)
+    repls = [(x, y) for x, y in zip(it, it)]
+    for needle, replacement in repls:
+        print(f"  {needle} -> {replacement}")
+    print()
+
+    with open(Path.home() / '.bugz_token', 'r') as f:
+        api_key = f.read().strip()
+
+    session = requests.Session()
+
+    search_params = {
+        "Bugzilla_api_key": api_key,
+        "include_fields": ["id", "summary"],
+        "resolution": ["---"],
+        "j_top": "OR",
+    }
+
+    for i, (needle, _) in enumerate(repls):
+        search_params.update({
+            f"f{i}": ["short_desc"],
+            f"o{i}": ["substring"],
+            f"v{i}": [needle],
+        })
+
+    resp = session.get(f"{args.api_url}/bug",
+                       params=search_params)
+    if not resp:
+        print(f"Search failed: {resp}; error: {resp.json()['message']}",
+              file=sys.stderr)
+        return 1
+
+    to_color = not os.environ.get("NO_COLOR")
+    if to_color:
+        red = "\033[1;31m"
+        green = "\033[1;32m"
+        reset = "\033[0m"
+
+    updates = []
+    print("Planned updates:")
+    for bug in resp.json()["bugs"]:
+        old = bug["summary"]
+        new = old
+        for needle, replacement in repls:
+            new = new.replace(needle, replacement)
+        updates.append((bug["id"], new))
+
+        if to_color:
+            for needle, replacement in repls:
+                if needle in old:
+                    old = old.replace(needle, f"{red}{needle}{reset}")
+                    new = new.replace(replacement, f"{green}{replacement}{reset}")
+        print(f"  {bug['id']:<7} - {old}")
+        print(f"  {'       ':<7} + {new}")
+    print()
+
+    if not args.update:
+        print("Run with --update to apply updates")
+        return 0
+
+    for bug_id, new_summary in updates:
+        update_params = {
+            "Bugzilla_api_key": api_key,
+            "ids": [bug_id],
+            "summary": new_summary,
+        }
+        print(f"{bug_id} ...", end="", file=sys.stderr)
+        resp = session.put(f"{args.api_url}/bug/{bug_id}",
+                           json=update_params)
+        if not resp:
+            print(f" failed: {resp}; error: {resp.json()['message']}",
+                  file=sys.stderr)
+            return 1
+        assert resp.json()["bugs"][0]["id"] == bug_id
+        print(" ok", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
