@@ -86,6 +86,10 @@ def main():
                     new = new.replace(replacement, f"{green}{replacement}{reset}")
         print(f"  {bug['id']:<7} - {old}")
         print(f"  {'       ':<7} + {new}")
+
+    if not updates:
+        print("  (no matching bugs found)")
+        return 0
     print()
 
     if not args.update:
